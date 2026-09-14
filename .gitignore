@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Raw challenge data
+data/
+03-challenge-data.zip
+
+# Generated/intermediate ML artifacts
+ml_training.csv
+ml_cv_predictions.csv
+rf_cv_predictions.csv
+model_rf.pkl
+
+# Generated comparison/backtest outputs
+predictions_baseline.csv
+predictions_ml.csv
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
