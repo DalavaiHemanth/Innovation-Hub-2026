@@ -83,13 +83,7 @@ numeric_features = [
     "reboot_cnt_recent_change",
 ]
 
-categorical_features = [
-    "hw_model",
-    "site_type",
-    "region",
-    "firmware",
-    "gateway_id",
-]
+categorical_features = ["hw_model", "site_type", "region"]
 
 # Keep only columns that actually exist.
 numeric_features = [
