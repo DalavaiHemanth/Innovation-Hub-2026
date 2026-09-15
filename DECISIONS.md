@@ -1,132 +1,214 @@
-# DECISIONS.md
+# Decisions
 
-## 1. Decision summary
+## 1. Part 2 area: Machine Learning
 
-The solution treats the task as a weekly gateway-risk ranking problem.
+I selected **Machine Learning (ML)** as the main Part 2 area.
 
-For each Monday in the eight-week scoring period, the model assigns every gateway a risk score and selects the top 15 gateways for the available field visits.
+### Why
 
-The final model is a Random Forest classifier using historical telemetry, meter-read behaviour, and a small set of gateway metadata. Gateway ID is deliberately excluded so that the model can generalise to gateways not seen during training.
+The task is a weekly gateway triage problem where the field team can visit only 15 gateways. A supervised model can learn patterns associated with gateways that engineers have classified as `Schlecht`, then rank all gateways by predicted risk.
 
-The final submission contains 120 rows: 15 ranked gateways for each of the eight required weeks.
+ML also provides a natural way to combine multiple telemetry signals instead of relying on a single anomaly threshold.
 
-## 2. Why this framing
+### Alternatives considered
 
-A gateway failure can silently stop readings from many meters. With only 15 field visits available each week, the practical objective is not to classify every gateway perfectly. The important decision is which 15 gateways should receive attention first.
+- **Data Engineering:** useful for building a reliable feature pipeline, but by itself does not directly solve the ranking/prediction problem.
+- **Decision Engineering:** useful for optimizing the final selection under the 15-visit constraint, but it depends on having a good risk signal first.
 
-The model is therefore evaluated as a ranking system, especially through Precision@15 and Recall@15.
+I therefore chose ML as the primary approach, while using data-engineering ideas in the feature pipeline and a ranking decision at prediction time.
 
-## 3. Features used
+---
 
-The model uses information available before each prediction week.
+## 2. Use multi-window telemetry features instead of only raw recent values
 
-### Telemetry
+I used gateway-level features calculated over **7, 14 and 28 day windows** before each prediction week.
 
-The feature engineering aggregates telemetry to gateway/day level and calculates 7-day, 14-day, and 28-day statistics.
-
-Important groups include:
+The model uses information such as:
 
 - disconnection counts
 - offline duration
-- system load
+- reboot counts
+- average load
 - uptime
-- signal-quality indicators
-- packet/CRC behaviour
-- transmission success
-- reboot behaviour
+- signal quality
+- packet/CRC related metrics
+- transmission metrics
+- active days
+- recent-vs-history changes
+- meter-read success statistics
 
-Signal-quality features include the proportion of observations in bad RSSI, RSRP/RSCP, and RSRQ/ECIO categories.
+### Why
 
-Recent-change features compare recent 7-day behaviour with the 28-day baseline for selected failure-related metrics.
+Gateway failures can appear as persistent problems or as a change from a gateway's normal behaviour. Multiple time windows capture both effects.
 
-### Meter-read behaviour
+The 28-day window provides a longer baseline, while 7-day and 14-day windows capture more recent changes.
 
-The model uses:
+### Alternative considered
 
-- mean meter-read success rate
-- variation in meter-read success rate
-- number of zero-read weeks
+A simpler approach was to rank gateways using only disconnections, or only the same three signals used by the supplied 3-sigma baseline.
 
-These provide an operational signal complementary to gateway telemetry.
+I tested simpler ranking approaches. The Random Forest produced better top-15 validation results than the simple disconnection-based comparison.
 
-### Metadata
+---
 
-Only three metadata fields are used:
+## 3. Use Random Forest instead of Logistic Regression
 
-- hardware model
-- site type
-- region
+I tested both Logistic Regression and Random Forest models.
 
-These provide context without allowing the model to memorise individual gateways.
-
-## 4. What was deliberately omitted
-
-### Gateway ID
-
-Gateway ID is not used as a predictive feature.
-
-This is important because the challenge requires testing on gateways never seen during training. Using an individual gateway identifier could allow the model to learn gateway-specific patterns instead of general failure signals.
-
-After removing gateway ID, the model retained strong unseen-gateway performance.
-
-### Firmware and antenna metadata
-
-The final model does not use firmware version or antenna type.
-
-An unseen-gateway comparison showed almost no improvement from adding the additional metadata:
-
-- current metadata: ROC-AUC 0.850
-- all metadata: ROC-AUC 0.852
-
-The small difference was not considered sufficient to justify adding those variables.
-
-### Field-visit outcomes and repair information
-
-Historical field-visit outcomes, replaced parts, and engineer review comments are not used as prediction features.
-
-These records are potentially selection-biased because field visits were already targeted by an operational process. Using them directly could make the model learn the historical intervention process rather than underlying gateway risk.
-
-## 5. Model choice
-
-A Random Forest was selected because it can combine heterogeneous telemetry features and categorical metadata while capturing nonlinear relationships and interactions.
-
-The final model uses:
+The final model is a Random Forest with:
 
 - 500 trees
-- maximum depth of 4
-- minimum leaf size of 4
+- maximum depth = 4
+- minimum leaf size = 4
 - balanced class weighting
 - fixed random seed
 
-The constrained tree depth and minimum leaf size are intended to reduce overfitting on the small labelled review set.
+The final training pipeline uses 44 numeric features and 3 categorical features:
 
-## 6. Validation
+- `hw_model`
+- `site_type`
+- `region`
 
-The labelled engineer-review dataset contains 120 gateways:
+### Why
 
-- 60 Normal
-- 60 Schlecht
+The Random Forest performed better during validation and can model non-linear relationships between telemetry behaviour and gateway condition.
 
-### Five-fold cross-validation
-
-The final model achieved:
+Five-fold cross-validation gave:
 
 - Accuracy: **0.767**
 - Balanced accuracy: **0.767**
 - ROC-AUC: **0.848**
 
-### Unseen-gateway validation
+### Alternative considered
 
-The validation contains 120 unique gateways, so each validation prediction is for a gateway not used for fitting that fold.
+Logistic Regression was tested first because it is simple and interpretable. Its validation performance was lower, so Random Forest was selected.
 
-The final model achieved:
+---
+
+## 4. Do not use gateway ID as a predictive feature
+
+I explicitly excluded `gateway_id` from the final model features.
+
+### Why
+
+Gateway IDs are identifiers rather than measurements of gateway health. Including them could allow the model to memorize gateway-specific patterns instead of learning general failure behaviour.
+
+This is especially important because the challenge requires testing on gateways that were not seen during training.
+
+### Alternative considered
+
+Including gateway ID was initially considered because it is available in the data and can sometimes capture persistent device-specific effects.
+
+I rejected this approach because it would weaken generalization to unseen gateways and make the model harder to justify operationally.
+
+The final model therefore uses operational telemetry and selected metadata instead of the gateway identifier.
+
+---
+
+## 5. Generate predictions strictly from information available before each week
+
+For every scored Monday, the prediction pipeline uses historical information strictly before that Monday.
+
+The model then produces a risk score for all available gateways, ranks them, and selects the top 15.
+
+### Why
+
+The field team has a hard capacity limit of 15 visits per week. The output therefore needs to be a ranked triage list rather than a binary prediction for every gateway.
+
+Using only information available before the prediction week prevents future information from entering the prediction process.
+
+### Alternative considered
+
+Using information from the full observation period could produce stronger-looking retrospective results, but it would introduce future information into earlier predictions.
+
+I rejected that approach because it would not represent how the system would operate in production.
+
+---
+
+# Validation and results
+
+The final Random Forest was evaluated using cross-validation and a gateway-held-out validation procedure.
+
+### Cross-validation
+
+- Accuracy: **0.767**
+- Balanced accuracy: **0.767**
+- ROC-AUC: **0.848**
+
+### Gateway-held-out validation
 
 - Accuracy: **0.792**
 - Balanced accuracy: **0.792**
 - ROC-AUC: **0.850**
+- Confusion matrix: `[[45, 15], [10, 50]]`
 
-Confusion matrix:
+This validation keeps gateways separate between training and validation, providing a more realistic test of generalization to gateways not seen during training.
 
-```text
-[[45 15]
- [10 50]]
+### Top-15 validation
+
+Across the five validation folds:
+
+- Average useful gateways selected: **10.8 / 15**
+- Precision@15: **0.720**
+- Recall: **0.905**
+
+The simple comparison baselines achieved approximately:
+
+- **9.6 / 15** useful gateways
+- Precision@15: **0.640**
+- Recall: **0.799**
+
+These top-15 results are validation results on the labelled engineer-review dataset; they are not claimed as an eight-week field-cost measurement.
+
+---
+
+# Prediction procedure
+
+The final prediction pipeline:
+
+1. Loads telemetry, meter-read data and gateway metadata.
+2. Builds features using historical data before each prediction week.
+3. Loads the trained Random Forest.
+4. Scores all gateways.
+5. Ranks gateways by model score.
+6. Selects the top 15 gateways.
+7. Generates a reason based on the strongest recent operational indicators.
+8. Produces the required `predictions.csv`.
+
+The final submission contains:
+
+- **8 weeks**
+- **15 gateways per week**
+- **120 total rows**
+
+The supplied validator reports:
+
+`predictions.csv: OK`
+
+---
+
+# Limitations
+
+The labelled engineer-review dataset contains only 120 reviewed gateways, so the supervised model is trained on a relatively small sample.
+
+Telemetry history is also incomplete for some reviewed gateways.
+
+The engineer-review labels may contain selection bias because the reviewed gateways were not necessarily a random sample of all gateways.
+
+The available field-visit records do not provide complete observed outcomes for all eight scored weeks. Therefore, a complete eight-week operational cost comparison cannot be claimed from the available historical visit data.
+
+The model should therefore be treated as a prioritization system rather than as a guarantee that every selected gateway will fail.
+
+---
+
+# What two more weeks of data would improve
+
+Two additional weeks of labelled operational data would help with:
+
+1.**Recent failure patterns**
+More recent labels would reveal whether the learned relationships still hold under current network conditions.
+
+2.**Calibration and drift checking**
+New observations could be used to check whether predicted risk remains aligned with observed gateway problems and whether network changes have altered the telemetry patterns.
+
+The additional data could then be used for retraining and a fresh gateway-held-out validation.
